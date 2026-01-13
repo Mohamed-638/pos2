@@ -2,13 +2,24 @@
 
 declare(strict_types=1);
 
+session_start();
+
 $pdo = require __DIR__ . '/../app/db.php';
 $config = require __DIR__ . '/../app/config.php';
 
 $currency = $config['currency'];
 $currencyCode = $config['currency_code'];
 $page = $_GET['page'] ?? 'dashboard';
-$alert = '';
+$alert = $_SESSION['alert'] ?? '';
+$alertType = $_SESSION['alert_type'] ?? 'success';
+
+unset($_SESSION['alert'], $_SESSION['alert_type']);
+
+if (!isset($_SESSION['csrf_token'])) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(16));
+}
+
+$csrfToken = $_SESSION['csrf_token'];
 
 function fetchAll(PDO $pdo, string $sql, array $params = []): array
 {
@@ -23,24 +34,38 @@ function execute(PDO $pdo, string $sql, array $params = []): void
     $stmt->execute($params);
 }
 
+function redirectWithMessage(string $page, string $message, string $type = 'success'): void
+{
+    $_SESSION['alert'] = $message;
+    $_SESSION['alert_type'] = $type;
+    header('Location: ?page=' . urlencode($page));
+    exit;
+}
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $token = $_POST['csrf_token'] ?? '';
+    if (!hash_equals($_SESSION['csrf_token'], $token)) {
+        redirectWithMessage($page, 'رمز الأمان غير صالح، يرجى المحاولة مرة أخرى.', 'error');
+    }
+
     if (isset($_POST['action']) && $_POST['action'] === 'create_branch') {
         execute(
             $pdo,
-            'INSERT INTO branches (name, address, phone, delivery_enabled, delivery_zone, delivery_fee, currency)
-             VALUES (:name, :address, :phone, :delivery_enabled, :delivery_zone, :delivery_fee, :currency)',
+            'INSERT INTO branches (name, address, phone, work_hours, delivery_enabled, delivery_zone, delivery_fee, delivery_schedule, currency)
+             VALUES (:name, :address, :phone, :work_hours, :delivery_enabled, :delivery_zone, :delivery_fee, :delivery_schedule, :currency)',
             [
                 ':name' => trim($_POST['name'] ?? ''),
                 ':address' => trim($_POST['address'] ?? ''),
                 ':phone' => trim($_POST['phone'] ?? ''),
+                ':work_hours' => trim($_POST['work_hours'] ?? ''),
                 ':delivery_enabled' => isset($_POST['delivery_enabled']) ? 1 : 0,
                 ':delivery_zone' => trim($_POST['delivery_zone'] ?? ''),
                 ':delivery_fee' => (float) ($_POST['delivery_fee'] ?? 0),
+                ':delivery_schedule' => trim($_POST['delivery_schedule'] ?? ''),
                 ':currency' => $currency,
             ]
         );
-        $alert = 'تمت إضافة الفرع بنجاح.';
-        $page = 'branches';
+        redirectWithMessage('branches', 'تمت إضافة الفرع بنجاح.');
     }
 
     if (isset($_POST['action']) && $_POST['action'] === 'create_product') {
@@ -57,8 +82,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 ':is_active' => isset($_POST['is_active']) ? 1 : 0,
             ]
         );
-        $alert = 'تمت إضافة المنتج بنجاح.';
-        $page = 'products';
+        redirectWithMessage('products', 'تمت إضافة المنتج بنجاح.');
     }
 
     if (isset($_POST['action']) && $_POST['action'] === 'create_user') {
@@ -74,28 +98,60 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 ':is_active' => isset($_POST['is_active']) ? 1 : 0,
             ]
         );
-        $alert = 'تمت إضافة المستخدم بنجاح.';
-        $page = 'users';
+        redirectWithMessage('users', 'تمت إضافة المستخدم بنجاح.');
     }
 
     if (isset($_POST['action']) && $_POST['action'] === 'create_sale') {
         $branchId = (int) ($_POST['branch_id'] ?? 0);
         $cashierId = (int) ($_POST['cashier_id'] ?? 0);
-        $productId = (int) ($_POST['product_id'] ?? 0);
-        $quantity = (int) ($_POST['quantity'] ?? 1);
+        $productIds = array_map('intval', $_POST['product_id'] ?? []);
+        $quantities = array_map('intval', $_POST['quantity'] ?? []);
+        $discount = (float) ($_POST['discount'] ?? 0);
+        $paymentMethod = trim($_POST['payment_method'] ?? 'cash');
+        $amountPaid = (float) ($_POST['amount_paid'] ?? 0);
 
-        $product = fetchAll($pdo, 'SELECT price FROM products WHERE id = :id', [':id' => $productId]);
-        $price = $product[0]['price'] ?? 0;
-        $lineTotal = $quantity * (float) $price;
+        if (count($productIds) === 0) {
+            redirectWithMessage('sales', 'يرجى إضافة عنصر واحد على الأقل.', 'error');
+        }
+
+        $totalAmount = 0.0;
+        $items = [];
+        foreach ($productIds as $index => $productId) {
+            if ($productId <= 0) {
+                continue;
+            }
+            $quantity = $quantities[$index] ?? 1;
+            $product = fetchAll(
+                $pdo,
+                'SELECT price FROM products WHERE id = :id',
+                [':id' => $productId]
+            );
+            $price = (float) ($product[0]['price'] ?? 0);
+            $lineTotal = $price * $quantity;
+            $totalAmount += $lineTotal;
+            $items[] = [
+                'product_id' => $productId,
+                'quantity' => $quantity,
+                'unit_price' => $price,
+                'line_total' => $lineTotal,
+            ];
+        }
+
+        $totalAmount = max(0, $totalAmount - $discount);
+        $changeDue = max(0, $amountPaid - $totalAmount);
 
         execute(
             $pdo,
-            'INSERT INTO sales (branch_id, cashier_id, total_amount, currency, created_at, notes)
-             VALUES (:branch_id, :cashier_id, :total_amount, :currency, :created_at, :notes)',
+            'INSERT INTO sales (branch_id, cashier_id, total_amount, discount, payment_method, amount_paid, change_due, currency, created_at, notes)
+             VALUES (:branch_id, :cashier_id, :total_amount, :discount, :payment_method, :amount_paid, :change_due, :currency, :created_at, :notes)',
             [
                 ':branch_id' => $branchId,
                 ':cashier_id' => $cashierId,
-                ':total_amount' => $lineTotal,
+                ':total_amount' => $totalAmount,
+                ':discount' => $discount,
+                ':payment_method' => $paymentMethod,
+                ':amount_paid' => $amountPaid,
+                ':change_due' => $changeDue,
                 ':currency' => $currencyCode,
                 ':created_at' => date('c'),
                 ':notes' => trim($_POST['notes'] ?? ''),
@@ -103,21 +159,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         );
 
         $saleId = (int) $pdo->lastInsertId();
-        execute(
-            $pdo,
-            'INSERT INTO sale_items (sale_id, product_id, quantity, unit_price, line_total)
-             VALUES (:sale_id, :product_id, :quantity, :unit_price, :line_total)',
-            [
-                ':sale_id' => $saleId,
-                ':product_id' => $productId,
-                ':quantity' => $quantity,
-                ':unit_price' => $price,
-                ':line_total' => $lineTotal,
-            ]
-        );
+        foreach ($items as $item) {
+            execute(
+                $pdo,
+                'INSERT INTO sale_items (sale_id, product_id, quantity, unit_price, line_total)
+                 VALUES (:sale_id, :product_id, :quantity, :unit_price, :line_total)',
+                [
+                    ':sale_id' => $saleId,
+                    ':product_id' => $item['product_id'],
+                    ':quantity' => $item['quantity'],
+                    ':unit_price' => $item['unit_price'],
+                    ':line_total' => $item['line_total'],
+                ]
+            );
+        }
 
-        $alert = 'تم تسجيل عملية البيع.';
-        $page = 'sales';
+        redirectWithMessage('sales', 'تم تسجيل عملية البيع.');
     }
 }
 
@@ -141,6 +198,11 @@ $branchSales = fetchAll(
      ORDER BY branches.id'
 );
 
+$productsByBranch = fetchAll(
+    $pdo,
+    'SELECT products.*, branches.name AS branch_name FROM products JOIN branches ON products.branch_id = branches.id WHERE products.is_active = 1 ORDER BY products.id DESC'
+);
+
 ?><!doctype html>
 <html lang="ar" dir="rtl">
 <head>
@@ -156,20 +218,34 @@ $branchSales = fetchAll(
 </header>
 <div class="container">
     <nav>
-        <a href="?page=dashboard">لوحة التحكم</a>
-        <a href="?page=branches">الفروع</a>
-        <a href="?page=products">المنتجات</a>
-        <a href="?page=users">المستخدمون</a>
-        <a href="?page=sales">المبيعات</a>
+        <a href="?page=dashboard" class="<?= $page === 'dashboard' ? 'active' : '' ?>">لوحة التحكم</a>
+        <a href="?page=branches" class="<?= $page === 'branches' ? 'active' : '' ?>">الفروع</a>
+        <a href="?page=products" class="<?= $page === 'products' ? 'active' : '' ?>">المنتجات</a>
+        <a href="?page=users" class="<?= $page === 'users' ? 'active' : '' ?>">المستخدمون</a>
+        <a href="?page=sales" class="<?= $page === 'sales' ? 'active' : '' ?>">المبيعات</a>
     </nav>
 
     <?php if ($alert): ?>
-        <div class="alert"><?= htmlspecialchars($alert) ?></div>
+        <div class="alert <?= $alertType === 'error' ? 'error' : '' ?>"><?= htmlspecialchars($alert) ?></div>
     <?php endif; ?>
 
     <?php if ($page === 'dashboard'): ?>
         <section>
             <h2>ملخص المبيعات حسب الفروع</h2>
+            <div class="cards">
+                <div class="card">
+                    <h3>عدد الفروع</h3>
+                    <p><?= count($branches) ?></p>
+                </div>
+                <div class="card">
+                    <h3>عدد المنتجات النشطة</h3>
+                    <p><?= count(array_filter($products, fn ($product) => (int) $product['is_active'] === 1)) ?></p>
+                </div>
+                <div class="card">
+                    <h3>عدد المستخدمين</h3>
+                    <p><?= count($users) ?></p>
+                </div>
+            </div>
             <table class="table">
                 <thead>
                     <tr>
@@ -196,16 +272,21 @@ $branchSales = fetchAll(
             <h2>إضافة فرع جديد</h2>
             <form method="post">
                 <input type="hidden" name="action" value="create_branch" />
+                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken) ?>" />
                 <label>اسم الفرع</label>
                 <input name="name" required />
                 <label>العنوان</label>
                 <input name="address" required />
                 <label>رقم الهاتف</label>
                 <input name="phone" required />
+                <label>ساعات العمل</label>
+                <input name="work_hours" placeholder="مثال: 9 صباحًا - 10 مساءً" />
                 <label>منطقة التوصيل</label>
                 <input name="delivery_zone" />
                 <label>رسوم التوصيل</label>
                 <input name="delivery_fee" type="number" step="0.01" />
+                <label>جدول التوصيل</label>
+                <input name="delivery_schedule" placeholder="مثال: يوميًا 12-8" />
                 <label>
                     <input type="checkbox" name="delivery_enabled" /> تفعيل التوصيل
                 </label>
@@ -220,6 +301,7 @@ $branchSales = fetchAll(
                         <th>الاسم</th>
                         <th>الهاتف</th>
                         <th>التوصيل</th>
+                        <th>ساعات العمل</th>
                         <th>العملة</th>
                     </tr>
                 </thead>
@@ -232,6 +314,7 @@ $branchSales = fetchAll(
                                 <?= $branch['delivery_enabled'] ? 'مفعل' : 'غير مفعل' ?>
                                 <span class="badge"><?= htmlspecialchars($branch['delivery_zone']) ?></span>
                             </td>
+                            <td><?= htmlspecialchars($branch['work_hours']) ?></td>
                             <td><?= htmlspecialchars($branch['currency']) ?></td>
                         </tr>
                     <?php endforeach; ?>
@@ -245,6 +328,7 @@ $branchSales = fetchAll(
             <h2>إضافة منتج</h2>
             <form method="post">
                 <input type="hidden" name="action" value="create_product" />
+                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken) ?>" />
                 <label>الفرع</label>
                 <select name="branch_id" required>
                     <?php foreach ($branches as $branch): ?>
@@ -295,6 +379,7 @@ $branchSales = fetchAll(
             <h2>إضافة مستخدم</h2>
             <form method="post">
                 <input type="hidden" name="action" value="create_user" />
+                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken) ?>" />
                 <label>الفرع</label>
                 <select name="branch_id" required>
                     <?php foreach ($branches as $branch): ?>
@@ -343,6 +428,7 @@ $branchSales = fetchAll(
             <h2>تسجيل عملية بيع</h2>
             <form method="post">
                 <input type="hidden" name="action" value="create_sale" />
+                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken) ?>" />
                 <label>الفرع</label>
                 <select name="branch_id" required>
                     <?php foreach ($branches as $branch): ?>
@@ -355,14 +441,43 @@ $branchSales = fetchAll(
                         <option value="<?= (int) $user['id'] ?>"><?= htmlspecialchars($user['full_name']) ?></option>
                     <?php endforeach; ?>
                 </select>
-                <label>المنتج</label>
-                <select name="product_id" required>
-                    <?php foreach ($products as $product): ?>
-                        <option value="<?= (int) $product['id'] ?>"><?= htmlspecialchars($product['name']) ?></option>
-                    <?php endforeach; ?>
+                <label>عناصر الفاتورة</label>
+                <table class="table items-table" id="items-table">
+                    <thead>
+                        <tr>
+                            <th>المنتج</th>
+                            <th>الكمية</th>
+                        </tr>
+                    </thead>
+                    <tbody id="items-body">
+                        <tr>
+                            <td>
+                                <select name="product_id[]" required>
+                                    <?php foreach ($productsByBranch as $product): ?>
+                                        <option value="<?= (int) $product['id'] ?>">
+                                            <?= htmlspecialchars($product['name']) ?> - <?= number_format((float) $product['price'], 2) ?>
+                                        </option>
+                                    <?php endforeach; ?>
+                                </select>
+                            </td>
+                            <td>
+                                <input name="quantity[]" type="number" value="1" min="1" />
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+                <button class="button-secondary" type="button" id="add-item">إضافة عنصر</button>
+                <label>الخصم</label>
+                <input name="discount" type="number" step="0.01" value="0" />
+                <label>طريقة الدفع</label>
+                <select name="payment_method">
+                    <option value="cash">نقدي</option>
+                    <option value="card">بطاقة</option>
+                    <option value="wallet">محفظة</option>
+                    <option value="transfer">تحويل</option>
                 </select>
-                <label>الكمية</label>
-                <input name="quantity" type="number" value="1" min="1" />
+                <label>المبلغ المدفوع</label>
+                <input name="amount_paid" type="number" step="0.01" value="0" />
                 <label>ملاحظات</label>
                 <textarea name="notes"></textarea>
                 <button type="submit">حفظ عملية البيع</button>
@@ -375,6 +490,8 @@ $branchSales = fetchAll(
                     <tr>
                         <th>الفرع</th>
                         <th>الكاشير</th>
+                        <th>الخصم</th>
+                        <th>طريقة الدفع</th>
                         <th>الإجمالي</th>
                         <th>التاريخ</th>
                     </tr>
@@ -384,6 +501,8 @@ $branchSales = fetchAll(
                         <tr>
                             <td><?= htmlspecialchars($sale['branch_name']) ?></td>
                             <td><?= htmlspecialchars($sale['cashier_name']) ?></td>
+                            <td><?= number_format((float) $sale['discount'], 2) ?></td>
+                            <td><?= htmlspecialchars($sale['payment_method']) ?></td>
                             <td><?= number_format((float) $sale['total_amount'], 2) ?> <?= htmlspecialchars($sale['currency']) ?></td>
                             <td><?= htmlspecialchars($sale['created_at']) ?></td>
                         </tr>
@@ -393,5 +512,29 @@ $branchSales = fetchAll(
         </section>
     <?php endif; ?>
 </div>
+<script>
+const addItemButton = document.getElementById('add-item');
+if (addItemButton) {
+  addItemButton.addEventListener('click', () => {
+    const tbody = document.getElementById('items-body');
+    const row = document.createElement('tr');
+    row.innerHTML = `
+      <td>
+        <select name="product_id[]" required>
+          <?php foreach ($productsByBranch as $product): ?>
+            <option value="<?= (int) $product['id'] ?>">
+              <?= htmlspecialchars($product['name']) ?> - <?= number_format((float) $product['price'], 2) ?>
+            </option>
+          <?php endforeach; ?>
+        </select>
+      </td>
+      <td>
+        <input name="quantity[]" type="number" value="1" min="1" />
+      </td>
+    `;
+    tbody.appendChild(row);
+  });
+}
+</script>
 </body>
 </html>

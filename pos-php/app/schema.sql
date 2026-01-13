@@ -3,9 +3,11 @@ CREATE TABLE IF NOT EXISTS branches (
     name TEXT NOT NULL,
     address TEXT NOT NULL,
     phone TEXT NOT NULL,
+    work_hours TEXT NOT NULL DEFAULT '',
     delivery_enabled INTEGER NOT NULL DEFAULT 0,
     delivery_zone TEXT DEFAULT '',
     delivery_fee REAL NOT NULL DEFAULT 0,
+    delivery_schedule TEXT NOT NULL DEFAULT '',
     currency TEXT NOT NULL
 );
 
@@ -35,6 +37,10 @@ CREATE TABLE IF NOT EXISTS sales (
     branch_id INTEGER NOT NULL,
     cashier_id INTEGER NOT NULL,
     total_amount REAL NOT NULL,
+    discount REAL NOT NULL DEFAULT 0,
+    payment_method TEXT NOT NULL DEFAULT 'cash',
+    amount_paid REAL NOT NULL DEFAULT 0,
+    change_due REAL NOT NULL DEFAULT 0,
     currency TEXT NOT NULL,
     created_at TEXT NOT NULL,
     notes TEXT,

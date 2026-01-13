@@ -55,6 +55,11 @@ nav a {
   font-weight: 600;
 }
 
+nav a.active {
+  background: var(--primary);
+  color: #fff;
+}
+
 section {
   background: #fff;
   border: 1px solid var(--border);
@@ -66,6 +71,15 @@ section {
 
 h2 {
   margin-top: 0;
+}
+
+.grid {
+  display: grid;
+  gap: 16px;
+}
+
+.grid.two {
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
 }
 
 form {
@@ -97,6 +111,10 @@ button {
   cursor: pointer;
 }
 
+.button-secondary {
+  background: #0f766e;
+}
+
 .table {
   width: 100%;
   border-collapse: collapse;
@@ -126,4 +144,45 @@ button {
   padding: 10px 12px;
   border-radius: 8px;
   margin-bottom: 16px;
+}
+
+.alert.error {
+  background: #fef2f2;
+  border-color: #fecaca;
+  color: #991b1b;
+}
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.card {
+  background: var(--accent);
+  padding: 16px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+}
+
+.card h3 {
+  margin: 0 0 8px;
+  font-size: 16px;
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: #eef2ff;
+  color: #4338ca;
+  font-size: 12px;
+}
+
+.items-table th,
+.items-table td {
+  text-align: right;
 }
